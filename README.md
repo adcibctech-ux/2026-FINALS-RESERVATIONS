@@ -1,8 +1,8 @@
-# 1-docs/
+# docs/
     architecture.md
     field-map.md
     testing.md
-# 2-automation-scripts/
+# automation-scripts/
       RRS-1-SlotImport.js
       RRS-2-BookingRequests.js
       RRS-3-Confirmations.js
@@ -10,10 +10,10 @@
       RRS-5-Writeback.js
       RRS-6-Refunds.js
       RRS-7-Cancellations.js
-# 3-extension-scripts/
+# extension-scripts/
       RRS-8-CancellationProcess.js
       RRS-9-ResetData.js
-# 4-archives/2026-03-09/
+# archives/2026-03-09/
       RRS-1-SlotImport-v1.0.26.js
       RRS-1-SlotImport-v1.1.26.js
       RRS-1-SlotImport-v1.2.26.js
