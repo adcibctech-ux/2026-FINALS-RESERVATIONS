@@ -13,7 +13,7 @@
 # extension-scripts/
       RRS-8-CancellationProcess.js
       RRS-9-ResetData.js
-# archives/2026-03-09/
+# archives/20260310-DemoBuild/
       RRS-1-SlotImport-v1.0.26.js
       RRS-1-SlotImport-v1.1.26.js
       RRS-1-SlotImport-v1.2.26.js
