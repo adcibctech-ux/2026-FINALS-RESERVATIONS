@@ -1,16 +1,18 @@
 /**
  * RRS-2-BookingRequests-v2.1.26
- * BOOKING REQUESTS (new) -> Deterministic multi-slot holds (in preference order) + create 1 BOOKING per held slot + write summaries
+ * BOOKING REQUESTS -> Deterministic multi-slot holds + 1 BOOKING per held slot + summaries
  *
  * BUG FIXES:
- * - Log requested slots beyond capacity as FAILED (NOT ATTEMPTED — capacity reached) [Option A]
- * - Ensure every created BOOKING links {Booking Request}
- * - Populate {Reservation Name} on each BOOKING (required downstream for writeback)
+ * - Reinforced email validation:
+ *    STUDIO ROSTER {DCG Email} == each selected PAID ROSTER {DCG Email} == BOOKING REQUESTS {Reservation Email}
+ *   If mismatch -> Request Status = "FAILED - INVALID EMAIL" and STOP (no holds, no bookings).
+ * - Logs validation failure message into {Failed Slot Summary} for clean email branching.
  *
  * BEHAVIOR:
  * - cap = MIN(count(Pre-Paid Reservation), Studio Hours Remaining (if present), 15)
  * - Attempts holds in selection order until cap held.
- * - Remaining requested slots (after cap reached) are logged to Failed Slot(s)/Summary as "NOT ATTEMPTED — capacity reached"
+ * - Remaining requested slots beyond cap are logged as FAILED (NOT ATTEMPTED — capacity reached).
+ * - Writes Hold / Failed / Booking summaries with EST formatting.
  */
 
 const cfg = input.config();
@@ -20,11 +22,13 @@ const REQ_TABLE = "BOOKING REQUESTS";
 const BOOK_TABLE = "BOOKINGS";
 const SLOTS_TABLE = "SLOTS (Operational)";
 const STUDIO_TABLE = "STUDIO ROSTER";
+const PAID_TABLE = "PAID ROSTER";
 
 const requests = base.getTable(REQ_TABLE);
 const bookings = base.getTable(BOOK_TABLE);
 const slots = base.getTable(SLOTS_TABLE);
 const studios = base.getTable(STUDIO_TABLE);
+const paid = base.getTable(PAID_TABLE);
 
 function sel(name) { return { name }; }
 
@@ -84,7 +88,7 @@ const reqQuery = await requests.selectRecordsAsync({
     "Reservation Email",
     "Contact Email",
     "Booking Acknowledgement",
-    "Reservation Name",          // <-- formula you already have on requests
+    "Reservation Name",
     "Hold Summary",
     "Failed Slot(s)",
     "Failed Slot Summary",
@@ -111,29 +115,91 @@ const paidLinks = (req.getCellValue("Pre-Paid Reservation") || []);
 const requestedSlotLinks = (req.getCellValue("Requested Slot(s)") || []);
 
 const contactEmail = (req.getCellValueAsString("Contact Email") || "").trim();
-const reservationEmail = (req.getCellValueAsString("Reservation Email") || "").trim();
+const reservationEmailRaw = (req.getCellValueAsString("Reservation Email") || "").trim();
+const reservationEmail = reservationEmailRaw.toLowerCase();
 const reservationName = (req.getCellValueAsString("Reservation Name") || "").trim();
 
-if (!studioLink || paidLinks.length === 0 || requestedSlotLinks.length === 0 || !contactEmail || !reservationEmail) {
+if (!studioLink || paidLinks.length === 0 || requestedSlotLinks.length === 0 || !contactEmail || !reservationEmailRaw) {
   await requests.updateRecordAsync(req.id, { "Request Status": sel("NEEDS HELP") });
   return;
 }
 
-// ------------------ Load studio hours remaining (optional cap) ------------------
-let studioHoursRemaining = null;
-try {
-  const studioQuery = await studios.selectRecordsAsync({ fields: ["Hours Remaining"] });
-  const studioRec = studioQuery.getRecord(studioLink.id);
-  if (studioRec) {
-    const hr = studioRec.getCellValue("Hours Remaining");
-    if (typeof hr === "number") studioHoursRemaining = hr;
-    else {
-      const asStr = (studioRec.getCellValueAsString("Hours Remaining") || "").trim();
-      const asNum = parseFloat(asStr);
-      if (!Number.isNaN(asNum)) studioHoursRemaining = asNum;
-    }
+// ------------------ Email validation (bolstered) ------------------
+// Load studio DCG Email
+const studioQuery = await studios.selectRecordsAsync({ fields: ["DCG Email", "Hours Remaining"] });
+const studioRec = studioQuery.getRecord(studioLink.id);
+const studioDcgEmail = (studioRec?.getCellValueAsString("DCG Email") || "").trim().toLowerCase();
+
+if (!studioDcgEmail) {
+  await requests.updateRecordAsync(req.id, {
+    "Request Status": sel("FAILED - INVALID EMAIL"),
+    "Failed Slot Summary": "FAILED: Studio DCG Email is missing in STUDIO ROSTER. Please contact the office manager.",
+  });
+  return;
+}
+
+if (studioDcgEmail !== reservationEmail) {
+  await requests.updateRecordAsync(req.id, {
+    "Request Status": sel("FAILED - INVALID EMAIL"),
+    "Failed Slot Summary":
+      `FAILED: Reservation Email validation failed.\n` +
+      `- Studio DCG Email: ${studioDcgEmail}\n` +
+      `- Reservation Email entered: ${reservationEmail}\n` +
+      `Please re-submit and enter the exact DCG email associated with your studio/payment.`,
+    "Hold Summary": "",
+    "Held Slot(s)": [],
+    "Failed Slot(s)": [],
+    "Hold Token": "",
+    "Hold Expires At": null,
+    "Confirmation Code": "",
+  });
+  return;
+}
+
+// Load PAID ROSTER DCG Emails for all selected paid records
+const paidQuery = await paid.selectRecordsAsync({ fields: ["DCG Email"] });
+const badPaid = [];
+for (const pl of paidLinks) {
+  const pr = paidQuery.getRecord(pl.id);
+  const paidDcg = (pr?.getCellValueAsString("DCG Email") || "").trim().toLowerCase();
+  if (!paidDcg) {
+    badPaid.push(`(missing DCG Email) record=${pl.id}`);
+    continue;
   }
-} catch (_) {}
+  if (paidDcg !== studioDcgEmail || paidDcg !== reservationEmail) {
+    badPaid.push(`${paidDcg} (record=${pl.id})`);
+  }
+}
+
+if (badPaid.length > 0) {
+  await requests.updateRecordAsync(req.id, {
+    "Request Status": sel("FAILED - INVALID EMAIL"),
+    "Failed Slot Summary":
+      `FAILED: Reservation Email validation failed.\n` +
+      `Reservation Email must match BOTH your Studio DCG Email and the DCG Email on each selected pre-paid reservation.\n\n` +
+      `- Studio DCG Email: ${studioDcgEmail}\n` +
+      `- Reservation Email entered: ${reservationEmail}\n` +
+      `- Mismatched/missing DCG Email on selected pre-paid reservation(s):\n  - ${badPaid.join("\n  - ")}\n\n` +
+      `Please re-submit and make sure you selected the correct pre-paid reservation(s) and entered the correct DCG email.`,
+    "Hold Summary": "",
+    "Held Slot(s)": [],
+    "Failed Slot(s)": [],
+    "Hold Token": "",
+    "Hold Expires At": null,
+    "Confirmation Code": "",
+  });
+  return;
+}
+
+// ------------------ Capacity (uses Studio Hours Remaining if numeric) ------------------
+let studioHoursRemaining = null;
+const hr = studioRec?.getCellValue("Hours Remaining");
+if (typeof hr === "number") studioHoursRemaining = hr;
+else {
+  const hrStr = (studioRec?.getCellValueAsString("Hours Remaining") || "").trim();
+  const hrNum = parseFloat(hrStr);
+  if (!Number.isNaN(hrNum)) studioHoursRemaining = hrNum;
+}
 
 let cap = paidLinks.length;
 if (typeof studioHoursRemaining === "number") cap = Math.min(cap, studioHoursRemaining);
@@ -144,7 +210,7 @@ if (cap <= 0) {
   return;
 }
 
-// ------------------ Load slot records ------------------
+// ------------------ Load slots ------------------
 const slotQuery = await slots.selectRecordsAsync({
   fields: ["Status", "Start Time", "End Time", "Room", "Hold Token", "Hold Expires At", "Held By Email", "Hold Created"],
 });
@@ -184,7 +250,7 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
   const sStart = hasTimeData ? new Date(sStartRaw) : null;
   const sEnd = hasTimeData ? new Date(sEndRaw) : null;
 
-  // If we've already reached cap, mark as NOT ATTEMPTED due to capacity
+  // If we've reached cap, mark NOT ATTEMPTED due to capacity
   if (heldSlotIds.length >= cap) {
     failedSlotIds.push(slotRec.id);
     if (hasTimeData) {
@@ -197,14 +263,12 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
     continue;
   }
 
-  // Missing time/room data
   if (!hasTimeData) {
     failedSlotIds.push(slotRec.id);
     failedSummaryLines.push(`FAILED: (slot missing room/start/end data) — please submit an IT help desk ticket.`);
     continue;
   }
 
-  // Slot not available
   if (!isAvailable(slotRec)) {
     failedSlotIds.push(slotRec.id);
     failedSummaryLines.push(
@@ -213,7 +277,6 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
     continue;
   }
 
-  // Allocate one PAID record per held slot
   const paidLink = paidLinks[paidIndex];
   if (!paidLink?.id) {
     failedSlotIds.push(slotRec.id);
@@ -241,11 +304,10 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
     }
   });
 
-  // Create 1 booking per held slot
   bookingCreates.push({
     fields: {
       "Booking Status": sel("AWAITING CONFIRMATION"),
-      "Booking Request": [{ id: req.id }],     // <-- ensure all bookings link back
+      "Booking Request": [{ id: req.id }],
       "Studio": [{ id: studioLink.id }],
       "Pre-Paid Reservation": [{ id: paidLink.id }],
       "Slot(s)": [{ id: slotRec.id }],
@@ -259,7 +321,6 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
   });
 }
 
-// Nothing held
 if (heldSlotIds.length === 0) {
   await requests.updateRecordAsync(req.id, {
     "Request Status": sel("FAILED - UNAVAILABLE SLOT"),
@@ -274,14 +335,11 @@ if (heldSlotIds.length === 0) {
   return;
 }
 
-// Apply holds
 if (slotUpdates.length) await batchUpdate(slots, slotUpdates);
 
-// Create bookings
 let createdBookingIds = [];
 if (bookingCreates.length) createdBookingIds = await batchCreate(bookings, bookingCreates);
 
-// Update request
 await requests.updateRecordAsync(req.id, {
   "Request Status": sel("HOLD CREATED"),
   "Hold Token": holdToken,
@@ -294,4 +352,4 @@ await requests.updateRecordAsync(req.id, {
   "BOOKINGS": createdBookingIds.map(id => ({ id })),
 });
 
-console.log(`RRS-2 v2.0.26 complete: held=${heldSlotIds.length}, failed=${failedSlotIds.length}, bookingsCreated=${createdBookingIds.length}`);
+console.log(`RRS-2 v2.1.26 complete: held=${heldSlotIds.length}, failed=${failedSlotIds.length}, bookingsCreated=${createdBookingIds.length}`);
