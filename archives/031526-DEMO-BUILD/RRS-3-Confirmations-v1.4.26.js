@@ -190,12 +190,9 @@ const confirmedSummaryLines = [];
 const failedSummaryLines = [];
 
 let confirmedN = 0;
-let failedN = 0;
 
-// Helper to record a failed booking with a reason + slot details if possible
 function recordFailedBooking(b, reason, slotRec = null) {
   failedBookings.push(b);
-  failedN++;
   if (slotRec) {
     const sStart = slotRec.getCellValue("Start Time") ? new Date(slotRec.getCellValue("Start Time")) : null;
     const sEnd = slotRec.getCellValue("End Time") ? new Date(slotRec.getCellValue("End Time")) : null;
@@ -232,7 +229,6 @@ for (const b of candidateValidBookings) {
     continue;
   }
 
-  // If slot is no longer HELD, treat as failed (someone else may have booked/hold released)
   const slotStatus = (slotRec.getCellValueAsString("Status") || "").trim();
   if (slotStatus !== "HELD") {
     recordFailedBooking(b, `Slot is not currently held (current status: ${slotStatus}).`, slotRec);
@@ -265,7 +261,6 @@ for (const b of candidateValidBookings) {
       "Booking Status": sel("CONFIRMED"),
       "Confirmed?": true,
       "Confirmed At": now,
-      // per booking summary stays RESERVATION 1, keep existing if present
       "Booking Summary": (b.getCellValueAsString("Booking Summary") || "").trim() || slotLine(1, room, sStart, sEnd),
     }
   });
@@ -307,7 +302,7 @@ if (paidUpdatesMap.size > 0) {
   if (paidRecordUpdates.length) await batchUpdate(paid, paidRecordUpdates);
 }
 
-// Update Booking Request status -> CONFIRMED if any confirmed, else EXPIRED
+// Update Booking Request status
 await requests.updateRecordAsync(reqLink.id, {
   "Request Status": confirmedBookings.length > 0 ? sel("CONFIRMED") : sel("EXPIRED"),
 });
@@ -319,20 +314,17 @@ else if (confirmedBookings.length > 0 && failedBookings.length > 0) result = "PA
 else if (confirmedBookings.length === 0 && expiredBookings.length > 0) result = "EXPIRED";
 else result = "INVALID";
 
-// Link sets for confirmation record
 const confirmedLinks = confirmedBookings.map(b => ({ id: b.id }));
 const failedLinks = failedBookings.map(b => ({ id: b.id }));
 const allLinks = [...confirmedLinks, ...failedLinks];
 
-// Representative hold token (if any)
 const holdToken = (confirmedBookings[0]?.getCellValueAsString("Hold Token") || "").trim()
   || (failedBookings[0]?.getCellValueAsString("Hold Token") || "").trim()
   || "";
 
-// Write confirmation record
 await confirmations.updateRecordAsync(conf.id, {
   "Result": sel(result),
-  "Booking": allLinks, // keep full visibility
+  "Booking": allLinks,
   "Confirmed Booking(s)": confirmedLinks,
   "Failed Booking(s)": failedLinks,
   "Hold Token": holdToken,
@@ -340,4 +332,4 @@ await confirmations.updateRecordAsync(conf.id, {
   "Failed Booking Summary": failedSummaryLines.join("\n"),
 });
 
-console.log(`RRS-3 v1.5.26 complete: result=${result}, confirmed=${confirmedBookings.length}, failed=${failedBookings.length}`);
+console.log(`RRS-3 v1.4.26 complete: result=${result}, confirmed=${confirmedBookings.length}, failed=${failedBookings.length}`);
