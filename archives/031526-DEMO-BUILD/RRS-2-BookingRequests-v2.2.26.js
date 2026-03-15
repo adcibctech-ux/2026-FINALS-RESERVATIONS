@@ -302,7 +302,7 @@ for (let i = 0; i < requestedSlotLinks.length; i++) {
       "Held Contact Email": contactEmail,
       "Confirmation Code": confirmCode,
       "Reservation Name": `${studioName} // ${lastName}`.trim(),
-      "Booking Summary": resLine(1, lastName, room, sStart, sEnd),
+      "Booking Summary": `${lastName} // ${room} // ${fmtDate(sStart)} // ${fmtTime(sStart)} - ${fmtTime(sEnd)} (EST)`,
     }
   });
 }
