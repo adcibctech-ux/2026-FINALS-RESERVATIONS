@@ -231,7 +231,8 @@ for (const b of candidates) {
       "Booking Status": sel("CONFIRMED"),
       "Confirmed?": true,
       "Confirmed At": now,
-      "Booking Summary": (b.getCellValueAsString("Booking Summary") || "").trim() || resLine(1, lastName, roomName(slotRec), sStart, sEnd),
+      "Booking Summary": (b.getCellValueAsString("Booking Summary") || "").trim() ||
+  `${lastName} // ${roomName(slotRec)} // ${fmtDate(sStart)} // ${fmtTime(sStart)} - ${fmtTime(sEnd)} (EST)`,
     }
   });
 
